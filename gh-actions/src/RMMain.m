@@ -20,7 +20,7 @@
 #ifndef RM_LEVEL
 #define RM_LEVEL 9
 #endif
-// 覆盖模式：1 = 白名单三类（PSGGeneral/UIPrefs/Base），0 = 仅 PSListController 基类（L2 验证安全）
+// 覆盖模式：1 = 白名单三类，0 = 仅基类，2 = 仅 PSUIPrefsListController（二级页面），3 = 仅 PSGGeneralController（首页）
 #ifndef RM_COVER
 #define RM_COVER 1
 #endif
@@ -785,17 +785,21 @@ static void RMEntryConstructor(void) {
             Class uipc = objc_getClass("PSUIPrefsListController");
             Class gen = objc_getClass("PSGGeneralController");
 
-            // specifiers hook：白名单或仅基类（L2 验证安全的组合）
+            // specifiers hook：覆盖模式见文件头注释
             RMHookOne(lc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
-#if RM_COVER >= 1
+#if RM_COVER == 1 || RM_COVER == 2
             RMHookOne(uipc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_UIPrefs);
+#endif
+#if RM_COVER == 1 || RM_COVER == 3
             RMHookOne(gen,  @selector(specifiers), (IMP)rm_specifiers, &origSpec_General);
 #endif
 
             if (RM_LEVEL >= 3) {
                 RMHookOne(lc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_Base);
-#if RM_COVER >= 1
+#if RM_COVER == 1 || RM_COVER == 2
                 RMHookOne(uipc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_UIPrefs);
+#endif
+#if RM_COVER == 1 || RM_COVER == 3
                 RMHookOne(gen,  @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_General);
 #endif
             }
