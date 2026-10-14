@@ -12,6 +12,15 @@
 
 #import "RMCommon.h"
 
+// 分层定位闪退：RM_LEVEL 控制启用哪些功能层
+// 1 = 仅 hook -specifiers（应用排序 + 锚定，不追加工具分组）
+// 2 = + 底部追加工具分组（改名/换图/排序/恢复按钮）
+// 3 = + hook -tableView:cellForRowAtIndexPath:
+// 4 = + 动态方法注入（排序编辑模式、按钮动作等）
+#ifndef RM_LEVEL
+#define RM_LEVEL 9
+#endif
+
 #pragma mark - 全局状态
 
 static IMP origSpecifiers = NULL;
@@ -300,6 +309,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
 
         // 底部工具分组：所有 PSListController 页面固定追加
         // （不能按导航深度条件增减，否则分区结构与数组不一致会导致越界崩溃）
+#if RM_LEVEL >= 2
         {
             PSSpecifier *grp = nil;
             if ([PSSpecifier respondsToSelector:@selector(groupSpecifierWithTitle:)])
@@ -317,6 +327,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
             if ((btn = RMToolButtonSpec(@"排序", @selector(rmOpenSort:), self))) [arr addObject:btn];
             if ((btn = RMToolButtonSpec(@"恢复", @selector(rmOpenRestore:), self))) [arr addObject:btn];
         }
+#endif
 
         objc_setAssociatedObject(arr, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return arr;
@@ -728,13 +739,17 @@ static void RMEntryConstructor(void) {
                 method_setImplementation(m1, (IMP)rm_specifiers);
             }
 
-            Method m2 = class_getInstanceMethod(lc, @selector(tableView:cellForRowAtIndexPath:));
-            if (m2) {
-                origCellForRow = method_getImplementation(m2);
-                method_setImplementation(m2, (IMP)rm_cellForRow);
+            if (RM_LEVEL >= 3) {
+                Method m2 = class_getInstanceMethod(lc, @selector(tableView:cellForRowAtIndexPath:));
+                if (m2) {
+                    origCellForRow = method_getImplementation(m2);
+                    method_setImplementation(m2, (IMP)rm_cellForRow);
+                }
             }
 
-            RMInstallDynamicMethods(lc);
+            if (RM_LEVEL >= 4) {
+                RMInstallDynamicMethods(lc);
+            }
         } @catch (NSException *e) {}
     }
 }
