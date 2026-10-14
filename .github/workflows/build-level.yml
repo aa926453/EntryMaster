@@ -8,9 +8,13 @@ on:
         required: true
         default: '2'
       cover:
-        description: 'RM_COVER (0=base only, 1=whitelist3)'
+        description: 'RM_COVER (0/1/2/3)'
         required: true
         default: '0'
+      debug:
+        description: 'RM_DEBUG (1=blackbox log)'
+        required: false
+        default: ''
 
 defaults:
   run:
@@ -30,11 +34,11 @@ jobs:
       - name: Build level
         run: |
           chmod +x build_macos.sh
-          RM_LEVEL=${{ inputs.level }} RM_COVER=${{ inputs.cover }} ./build_macos.sh
+          RM_LEVEL=${{ inputs.level }} RM_COVER=${{ inputs.cover }} RM_DEBUG=${{ inputs.debug }} ./build_macos.sh
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
-          name: EntryMaster-deb-l${{ inputs.level }}-c${{ inputs.cover }}
+          name: EntryMaster-deb-l${{ inputs.level }}-c${{ inputs.cover }}${{ inputs.debug == '1' && '-dbg' || '' }}
           path: gh-actions/*.deb
           if-no-files-found: error
