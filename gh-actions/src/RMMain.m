@@ -342,7 +342,7 @@ static id RMToolButtonSpec(NSString *title, SEL action, id target) {
     if ([spec respondsToSelector:@selector(setButtonAction:)]) {
         [spec setButtonAction:action];
     } else {
-        [spec setProperty:action forKey:@"buttonAction"];
+        [spec setProperty:(id)action forKey:@"buttonAction"];
     }
     objc_setAssociatedObject(spec, &kRMToolKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return spec;
