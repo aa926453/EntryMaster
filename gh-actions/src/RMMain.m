@@ -127,28 +127,14 @@ static IMP RMOrigCell(id self) {
 #pragma mark - 基础工具
 
 static NSString *RMNameOf(id spec) {
+    if (!spec) return nil;
     @try {
+        // name 是纯属性读取，实测对各类自定义 specifier 安全；仍然加 respondsToSelector 防线
+        if (![spec respondsToSelector:@selector(name)]) return nil;
         NSString *n = [(PSSpecifier *)spec name];
         if ([n isKindOfClass:[NSString class]]) return n;
     } @catch (NSException *e) {}
     return nil;
-}
-
-BOOL RMIsGroupSpecifier(id spec) {
-    if (!spec) return NO;
-    @try {
-        // 防护栏：只在对象真正实现该方法时才调用，避免对特殊 specifier 触发段错误
-        if (![spec respondsToSelector:@selector(cellType)]) {
-            if ([spec respondsToSelector:@selector(propertyForKey:)]) {
-                id v = [(PSSpecifier *)spec propertyForKey:@"cell"];
-                if ([v isKindOfClass:[NSString class]] && [(NSString *)v isEqualToString:@"PSGroupCell"]) return YES;
-            }
-            return NO;
-        }
-        NSString *ct = [(PSSpecifier *)spec cellType];
-        if ([ct isKindOfClass:[NSString class]] && [ct isEqualToString:@"PSGroupCell"]) return YES;
-    } @catch (NSException *e) {}
-    return NO;
 }
 
 NSString *RMPageKey(id vc) {
@@ -170,19 +156,19 @@ NSString *RMKeyForSpecifier(id spec) {
     return n.length ? n : @"__unnamed__";
 }
 
-// 锚定 key：有名字的用名字；无名字的分组/行用出现序号，保证同一默认结构下稳定
+// 锚定 key：有名字的用名字；无名字的用出现序号（扁平数组下标），保证同一默认结构下稳定
+// 注意：绝不在锚定阶段调用 specifier 的内容方法（cellType 等在某些自定义 specifier 上会段错误）
 static NSArray<NSString *> *RMAnchoredKeys(NSArray *specs) {
     NSMutableArray<NSString *> *keys = [NSMutableArray arrayWithCapacity:specs.count];
-    NSUInteger gi = 0, ri = 0;
-    for (id spec in specs) {
+    NSUInteger ri = 0;
+    for (NSUInteger i = 0; i < specs.count; i++) {
+        id spec = specs[i];
         NSString *n = RMNameOf(spec);
         NSString *k;
         if (n.length) {
             k = n;
-        } else if (RMIsGroupSpecifier(spec)) {
-            k = [NSString stringWithFormat:@"__group__%lu", (unsigned long)gi++];
         } else {
-            k = [NSString stringWithFormat:@"__row__%lu", (unsigned long)ri++];
+            k = [NSString stringWithFormat:@"__item__%lu", (unsigned long)ri++];
         }
         objc_setAssociatedObject(spec, &kRMStashKey, k, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [keys addObject:k];
@@ -198,21 +184,21 @@ static void RMAnchorOnce(NSArray *specs) {
     objc_setAssociatedObject(specs, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-NSInteger RMFlatIndexOfIndexPath(NSArray *specs, NSIndexPath *ip) {
-    if (!specs || !ip) return NSNotFound;
-    NSInteger group = -1, row = 0;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        id spec = specs[i];
-        if (RMIsGroupSpecifier(spec)) { group++; row = 0; continue; } // 分组头不算行
-        if (group == ip.section && row == ip.row) return (NSInteger)i;
-        row++;
+// 用 UITableView 自己的分区结构把 (section,row) 折算成扁平数组下标。
+// PS 表格模型中每个 specifier 恰好占一行（分组头也是行），所以扁平下标 == specifiers 数组下标。
+NSInteger RMFlatIndexOfTable(UITableView *tv, NSIndexPath *ip) {
+    if (!tv || !ip) return NSNotFound;
+    @try {
+        NSInteger flat = 0;
+        for (NSInteger s = 0; s < ip.section; s++) flat += [tv numberOfRowsInSection:s];
+        return flat + ip.row;
+    } @catch (NSException *e) {
+        return NSNotFound;
     }
-    return NSNotFound;
 }
 
-static id RMSpecifierAtIndexPath(NSArray *specs, NSIndexPath *ip) {
-    NSInteger idx = RMFlatIndexOfIndexPath(specs, ip);
-    if (idx == NSNotFound || idx < 0 || (NSUInteger)idx >= specs.count) return nil;
+static id RMSpecifierAtTableIndex(NSArray *specs, NSInteger idx) {
+    if (idx == NSNotFound || idx < 0 || !specs || (NSUInteger)idx >= specs.count) return nil;
     return specs[idx];
 }
 
@@ -462,8 +448,10 @@ static id rm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
     }
     @try {
         NSArray *specs = [(PSListController *)self specifiers];
-        id spec = RMSpecifierAtIndexPath(specs, ip);
-        if (spec && cell && !RMIsGroupSpecifier(spec) && !RMIsToolSpecifier(spec)) {
+        NSInteger idx = RMFlatIndexOfTable(tv, ip);
+        id spec = RMSpecifierAtTableIndex(specs, idx);
+        // 不再检测分组头：没有改名/换图数据的条目 apply 本身就是无操作，安全
+        if (spec && cell && !RMIsToolSpecifier(spec)) {
             RMApplyToCell(cell, spec, RMPageKey(self));
         }
     } @catch (NSException *e) {}
@@ -474,35 +462,31 @@ static id rm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
 
 static void RMHandleMove(id listController, NSIndexPath *fromIP, NSIndexPath *toIP) {
     @try {
+        UITableView *tv = RMTableFor(listController);
         NSArray *specs = [(PSListController *)listController specifiers];
+        if (!tv || !specs.count) return;
 
-        // 按 section 整理内容行（分组头作为分界）
-        NSMutableArray *sections = [NSMutableArray array];
-        NSMutableArray *cur = nil;
-        for (id sp in specs) {
-            if (RMIsGroupSpecifier(sp) || !cur) {
-                cur = [NSMutableArray array];
-                [sections addObject:cur];
-            }
-            if (!RMIsGroupSpecifier(sp) && !RMIsToolSpecifier(sp)) [cur addObject:sp];
-        }
+        // 直接在扁平数组上移动（扁平下标 == specifiers 数组下标，不再做分组分析）
+        NSInteger fi = RMFlatIndexOfTable(tv, fromIP);
+        NSInteger ti = RMFlatIndexOfTable(tv, toIP);
+        if (fi == NSNotFound || ti == NSNotFound) return;
+        if (fi < 0 || (NSUInteger)fi >= specs.count || ti < 0 || (NSUInteger)ti >= specs.count) return;
 
-        NSInteger sf = fromIP.section, rf = fromIP.row;
-        NSInteger st = toIP.section,   rt = toIP.row;
-        if (sf < 0 || st < 0 || sf >= (NSInteger)sections.count || st >= (NSInteger)sections.count) return;
-        NSMutableArray *src = sections[sf];
-        if (rf < 0 || rf >= (NSInteger)src.count) return;
+        NSMutableArray *arr = [NSMutableArray arrayWithArray:specs];
+        id moved = arr[fi];
+        // 目标位置合法性与工具组保护：不允许把内容行拖进工具组
+        if (RMIsToolSpecifier(moved)) return;
+        NSInteger tiClamped = ti;
+        if ((NSUInteger)tiClamped >= arr.count) tiClamped = (NSInteger)arr.count - 1;
+        if (RMIsToolSpecifier(arr[tiClamped])) return;
 
-        id moved = src[rf];
-        [src removeObjectAtIndex:rf];
-        NSMutableArray *dst = sections[st];
-        NSInteger rt2 = MIN(MAX(rt, 0), (NSInteger)dst.count);
-        [dst insertObject:moved atIndex:rt2];
+        [arr removeObjectAtIndex:fi];
+        if ((NSUInteger)tiClamped > arr.count) tiClamped = (NSInteger)arr.count;
+        [arr insertObject:moved atIndex:tiClamped];
 
-        // 重建平面顺序并持久化（只含内容行）
+        // 持久化整页顺序（含分组头，恢复时也按此顺序还原）
         NSMutableArray<NSString *> *order = [NSMutableArray array];
-        for (NSMutableArray *sec in sections)
-            for (id sp in sec) [order addObject:RMKeyForSpecifier(sp)];
+        for (id sp in arr) [order addObject:RMKeyForSpecifier(sp)];
 
         [[RMStore shared] setOrder:order page:RMPageKey(listController)];
         dispatch_async(dispatch_get_main_queue(), ^{ RMRefresh(listController); });
@@ -604,7 +588,7 @@ typedef NS_ENUM(NSInteger, RMEditMode) { RMEditModeRename = 0, RMEditModeIcon = 
         RMStore *store = [RMStore shared];
         @try {
             for (id spec in [lc specifiers]) {
-                if (RMIsGroupSpecifier(spec) || RMIsToolSpecifier(spec)) continue;
+                if (RMIsToolSpecifier(spec)) continue;
                 RMEditItem *it = [[RMEditItem alloc] init];
                 it.spec = spec;
                 it.key = RMKeyForSpecifier(spec);
@@ -826,8 +810,9 @@ static void RMInstallEditSupport(Class lc) {
             imp_implementationWithBlock(^BOOL(id _self, UITableView *tv, NSIndexPath *ip) {
                 @try {
                     NSArray *specs = [(PSListController *)_self specifiers];
-                    id spec = RMSpecifierAtIndexPath(specs, ip);
-                    return spec && !RMIsGroupSpecifier(spec) && !RMIsToolSpecifier(spec);
+                    NSInteger idx = RMFlatIndexOfTable(tv, ip);
+                    id spec = RMSpecifierAtTableIndex(specs, idx);
+                    return spec && !RMIsToolSpecifier(spec);
                 } @catch (NSException *e) { return NO; }
             }), "B@:@@@");
     }
