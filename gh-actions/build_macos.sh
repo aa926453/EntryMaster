@@ -15,8 +15,9 @@ mkdir -p "$OUT"
 
 SRC="RMStore RMPickers RMMain"
 VERSION="1.5.0"
+if [ -n "${RM_PROBE:-}" ]; then VERSION="1.5.0-probe"; fi
 
-COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations)
+COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations ${RM_PROBE:+-DRM_PROBE=1})
 FRAMEWORKS=(-framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics
             -framework UniformTypeIdentifiers -framework PhotosUI -framework Photos
             -framework MobileCoreServices -framework CoreFoundation -framework CoreServices)
