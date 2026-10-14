@@ -17,8 +17,9 @@ SRC="RMStore RMPickers RMMain"
 VERSION="1.5.2"
 if [ -n "${RM_PROBE:-}" ]; then VERSION="1.5.2-probe"; fi
 if [ -n "${RM_LEVEL:-}" ]; then VERSION="${VERSION}-l${RM_LEVEL}"; fi
+if [ -n "${RM_COVER:-}" ]; then VERSION="${VERSION}-c${RM_COVER}"; fi
 
-COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations ${RM_PROBE:+-DRM_PROBE=1} ${RM_LEVEL:+-DRM_LEVEL=$RM_LEVEL})
+COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations ${RM_PROBE:+-DRM_PROBE=1} ${RM_LEVEL:+-DRM_LEVEL=$RM_LEVEL} ${RM_COVER:+-DRM_COVER=$RM_COVER})
 FRAMEWORKS=(-framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics
             -framework UniformTypeIdentifiers -framework PhotosUI -framework Photos
             -framework MobileCoreServices -framework CoreFoundation -framework CoreServices)
