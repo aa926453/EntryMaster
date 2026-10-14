@@ -16,9 +16,8 @@ mkdir -p "$OUT"
 SRC="RMStore RMPickers RMMain"
 VERSION="1.5.0"
 
-COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -F"$PF" -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations)
-FRAMEWORKS=(-framework Foundation -framework UIKit -framework Preferences
-            -framework QuartzCore -framework CoreGraphics
+COMMON=(-isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -O2 -fvisibility=hidden -Wall -Wno-deprecated-declarations)
+FRAMEWORKS=(-framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics
             -framework UniformTypeIdentifiers -framework PhotosUI -framework Photos
             -framework MobileCoreServices -framework CoreFoundation -framework CoreServices)
 
@@ -33,7 +32,7 @@ for ARCH in arm64 arm64e; do
   echo "[*] 链接 $ARCH..."
   xcrun clang -arch "$ARCH" -dynamiclib -isysroot "$SDK" -miphoneos-version-min=14.0 \
     -install_name "/var/jb/Library/MobileSubstrate/DynamicLibraries/EntryMaster.dylib" \
-    -F"$PF" "${FRAMEWORKS[@]}" "${OBJS[@]}" -o "$OUT/EntryMaster.$ARCH.dylib"
+    "${FRAMEWORKS[@]}" "${OBJS[@]}" -o "$OUT/EntryMaster.$ARCH.dylib"
 
   echo "[*] ldid 签名 $ARCH 切片..."
   ldid -S "$OUT/EntryMaster.$ARCH.dylib"
