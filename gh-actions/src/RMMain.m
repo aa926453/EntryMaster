@@ -24,6 +24,74 @@
 #ifndef RM_COVER
 #define RM_COVER 1
 #endif
+// 黑匣子日志：RM_DEBUG=1 时把执行轨迹与崩溃信号写入 entrymaster.log
+#if defined(RM_DEBUG) && RM_DEBUG
+#define RMLOG(...) RMLog(__VA_ARGS__)
+#else
+#define RMLOG(...) do {} while (0)
+#endif
+
+#pragma mark - 黑匣子日志
+
+#if defined(RM_DEBUG) && RM_DEBUG
+#import <execinfo.h>
+#import <signal.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <stdarg.h>
+#import <time.h>
+
+static void RMLogWriteRaw(const char *cstr) {
+    int fd = open("/var/mobile/Library/Preferences/entrymaster.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) return;
+    write(fd, cstr, strlen(cstr));
+    close(fd);
+}
+
+void RMLog(NSString *fmt, ...) {
+    @try {
+        va_list ap; va_start(ap, fmt);
+        NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        time_t t = time(NULL);
+        struct tm tmv; localtime_r(&t, &tmv);
+        char line[2048];
+        snprintf(line, sizeof(line), "[%02d:%02d:%02d] %s\n", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, s.UTF8String);
+        RMLogWriteRaw(line);
+    } @catch (NSException *e) {}
+}
+
+static void RMCrashSignalHandler(int sig) {
+    int fd = open("/var/mobile/Library/Preferences/entrymaster.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char head[80];
+        int n = snprintf(head, sizeof(head), "\n=== CRASH SIGNAL %d ===\n", sig);
+        write(fd, head, (size_t)n);
+        void *bt[64];
+        int nbt = backtrace(bt, 64);
+        backtrace_symbols_fd(bt, nbt, fd);
+        close(fd);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void RMCrashNSHandler(NSException *exc) {
+    RMLog(@"NSException: %@ reason: %@\n%@", exc.name, exc.reason, exc.callStackSymbols);
+}
+
+void RMLogInstallCrashTrap(void) {
+    int sigs[] = {SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGTRAP, SIGFPE};
+    for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+        signal(sigs[i], RMCrashSignalHandler);
+    NSSetUncaughtExceptionHandler(RMCrashNSHandler);
+    RMLog(@"=== EntryMaster 日志启动 ===");
+}
+#else
+void RMLog(NSString *fmt, ...) { (void)fmt; }
+void RMLogInstallCrashTrap(void) {}
+#endif
+
 
 #pragma mark - 全局状态
 
@@ -300,6 +368,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
     IMP origImp = RMOrigSpec(self);
     if (!origImp) return @[];
     NSArray *orig = ((NSArray *(*)(id, SEL))origImp)(self, _cmd);
+    RMLOG(@"spec 进入 %@ 原始=%lu", NSStringFromClass([self class]), (unsigned long)orig.count);
     @try {
         if (!orig.count) return orig;
 
@@ -314,6 +383,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
 
         NSArray *order = [[RMStore shared] orderForPage:RMPageKey(self)];
         NSMutableArray *arr = [NSMutableArray arrayWithArray:orig];
+        RMLOG(@"spec 锚定+取序完成 order=%lu", (unsigned long)order.count);
         if (order.count) {
             // 用锚定 key 还原保存的顺序
             NSMutableArray<NSString *> *keys = [NSMutableArray arrayWithCapacity:orig.count];
@@ -333,6 +403,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
             for (NSUInteger i = 0; i < orig.count; i++)
                 if (![used containsIndex:i]) [sorted addObject:orig[i]];
             [arr setArray:sorted];
+            RMLOG(@"spec 排序应用完成");
         }
 
         // 底部工具分组：所有 PSListController 页面固定追加
@@ -349,17 +420,21 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
                 objc_setAssociatedObject(grp, &kRMToolKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 [arr addObject:grp];
             }
+            RMLOG(@"spec 分组已加 grp=%d", grp != nil);
             PSSpecifier *btn;
             if ((btn = RMToolButtonSpec(@"改名", @selector(rmOpenRename:), self))) [arr addObject:btn];
             if ((btn = RMToolButtonSpec(@"换图", @selector(rmOpenIcons:), self))) [arr addObject:btn];
             if ((btn = RMToolButtonSpec(@"排序", @selector(rmOpenSort:), self))) [arr addObject:btn];
             if ((btn = RMToolButtonSpec(@"恢复", @selector(rmOpenRestore:), self))) [arr addObject:btn];
+            RMLOG(@"spec 四按钮已加");
         }
 #endif
 
         objc_setAssociatedObject(arr, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        RMLOG(@"spec 返回 共=%lu", (unsigned long)arr.count);
         return arr;
     } @catch (NSException *e) {
+        RMLOG(@"spec 异常 %@ %@", e.name, e.reason);
         return orig;
     }
 }
@@ -369,6 +444,11 @@ static id rm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
     IMP origImp = RMOrigCell(self);
     if (!origImp) return nil;
     id cell = ((id (*)(id, SEL, UITableView *, NSIndexPath *))origImp)(self, _cmd, tv, ip);
+    static NSInteger rmCellLogCount = 0;
+    if (rmCellLogCount < 40) {
+        rmCellLogCount++;
+        RMLOG(@"cellForRow %@ sec=%ld row=%ld", NSStringFromClass([self class]), (long)ip.section, (long)ip.row);
+    }
     @try {
         NSArray *specs = [(PSListController *)self specifiers];
         id spec = RMSpecifierAtIndexPath(specs, ip);
@@ -492,6 +572,7 @@ typedef NS_ENUM(NSInteger, RMEditMode) { RMEditModeRename = 0, RMEditModeIcon = 
 
 + (void)openWithListController:(PSListController *)lc mode:(RMEditMode)m {
     if (!lc) return;
+    RMLOG(@"编辑器打开 mode=%ld page=%@", (long)m, RMPageKey(lc));
     RMListEditor *ed = [[RMListEditor alloc] initWithListController:lc mode:m];
     UINavigationController *nav = ((UIViewController *)lc).navigationController;
     if (nav) {
@@ -772,26 +853,35 @@ static void RMEntryConstructor(void) {
     @autoreleasepool {
 #ifdef RM_PROBE
         // 探针版：完全空操作，仅验证 dylib 能否被注入加载而不崩溃
+        RMLOG(@"probe 构造函数执行，直接返回");
         return;
 #endif
+        RMLOG(@"=== 构造函数开始 level=%d cover=%d ===", RM_LEVEL, RM_COVER);
+        RMLogInstallCrashTrap();
+        RMLOG(@"崩溃捕获已安装");
         @try {
             if (!rmOurIcons) rmOurIcons = [NSMutableSet set];
             // 双保险：只处理设置 App
             NSString *bid = [NSBundle mainBundle].bundleIdentifier;
+            RMLOG(@"bundle id = %@", bid);
             if (![bid isEqualToString:@"com.apple.Preferences"]) return;
 
             Class lc = objc_getClass("PSListController");
             if (!lc) return;
             Class uipc = objc_getClass("PSUIPrefsListController");
             Class gen = objc_getClass("PSGGeneralController");
+            RMLOG(@"类查找完成 lc=%d uipc=%d gen=%d", lc != nil, uipc != nil, gen != nil);
 
             // specifiers hook：覆盖模式见文件头注释
             RMHookOne(lc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
+            RMLOG(@"hook base spec 完成");
 #if RM_COVER == 1 || RM_COVER == 2
             RMHookOne(uipc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_UIPrefs);
+            RMLOG(@"hook uipc spec 完成");
 #endif
 #if RM_COVER == 1 || RM_COVER == 3
             RMHookOne(gen,  @selector(specifiers), (IMP)rm_specifiers, &origSpec_General);
+            RMLOG(@"hook gen spec 完成");
 #endif
 
             if (RM_LEVEL >= 3) {
@@ -802,14 +892,20 @@ static void RMEntryConstructor(void) {
 #if RM_COVER == 1 || RM_COVER == 3
                 RMHookOne(gen,  @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_General);
 #endif
+                RMLOG(@"hook cellForRow 完成");
             }
 
             if (RM_LEVEL >= 4) {
                 RMInstallDynamicMethods(lc);
+                RMLOG(@"动态方法安装完成");
             }
             if (RM_LEVEL >= 5) {
                 RMInstallEditSupport(lc);
+                RMLOG(@"编辑支持安装完成");
             }
-        } @catch (NSException *e) {}
+            RMLOG(@"=== 构造函数全部完成 ===");
+        } @catch (NSException *e) {
+            RMLOG(@"构造异常 %@ %@", e.name, e.reason);
+        }
     }
 }
