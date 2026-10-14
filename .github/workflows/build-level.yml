@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: 'RM_LEVEL (1-4)'
+        description: 'RM_LEVEL (1-5)'
         required: true
         default: '2'
+      cover:
+        description: 'RM_COVER (0=base only, 1=whitelist3)'
+        required: true
+        default: '0'
 
 defaults:
   run:
@@ -26,11 +30,11 @@ jobs:
       - name: Build level
         run: |
           chmod +x build_macos.sh
-          RM_LEVEL=${{ inputs.level }} ./build_macos.sh
+          RM_LEVEL=${{ inputs.level }} RM_COVER=${{ inputs.cover }} ./build_macos.sh
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
-          name: EntryMaster-deb-l${{ inputs.level }}
+          name: EntryMaster-deb-l${{ inputs.level }}-c${{ inputs.cover }}
           path: gh-actions/*.deb
           if-no-files-found: error
