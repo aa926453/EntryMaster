@@ -23,12 +23,30 @@
 
 #pragma mark - 全局状态
 
-static IMP origSpecifiers = NULL;
-static IMP origCellForRow = NULL;
 static NSMutableSet<UIImage *> *rmOurIcons;             // 我们应用过的自定义图（用于复用时还原）
 static char kRMStashKey;                                 // 锚定 key（挂在 PSSpecifier 上）
 static char kRMToolKey;                                  // 工具条目标记（挂在 PSSpecifier 上）
 static char kRMAnchoredArrKey;                           // 数组已锚定标记（挂在 NSArray 上）
+static char kRMModifiedKey;                              // 原数组 → 我们处理后的数组（结果缓存）
+static char kRMModifiedCountKey;                         // 缓存时的条目数
+
+// iOS 17 上设置首页/多数页面都是 PSListController 的【子类重写】，
+// 只替换父类实现会被子类盖住 —— 必须对每个真正实现该方法的类逐一替换。
+// rmOrigMap 记录每个（类,选择器）的原 IMP，调用时按对象实际类沿继承链回溯。
+static NSMutableDictionary<NSString *, NSValue *> *rmOrigMap;
+
+static NSString *RMHookKey(Class c, SEL s) {
+    return [NSStringFromClass(c) stringByAppendingString:NSStringFromSelector(s)];
+}
+
+static IMP RMOrigFor(Class c, SEL s) {
+    if (!rmOrigMap) return NULL;
+    for (Class k = c; k; k = class_getSuperclass(k)) {
+        NSValue *v = rmOrigMap[RMHookKey(k, s)];
+        if (v) return (IMP)v.pointerValue;
+    }
+    return NULL;
+}
 
 #pragma mark - 基础工具
 
@@ -271,9 +289,18 @@ static void RMAnchorPopover(UIAlertController *sheet, UIView *v) {
 
 // -specifiers：应用保存的排序 + 锚定每条 key + 底部追加工具分组
 static NSArray *rm_specifiers(id self, SEL _cmd) {
-    NSArray *orig = ((NSArray *(*)(id, SEL))origSpecifiers)(self, _cmd);
+    IMP origImp = RMOrigFor([self class], _cmd);
+    if (!origImp) return @[];
+    NSArray *orig = ((NSArray *(*)(id, SEL))origImp)(self, _cmd);
     @try {
         if (!orig.count) return orig;
+
+        // 同一原始数组且条目数未变时复用缓存结果：保证多次调用返回一致，
+        // 也避免 PSListController 内部把数组当缓存使用时出现身份/内容不一致
+        id cached = objc_getAssociatedObject(orig, &kRMModifiedKey);
+        NSNumber *cachedCnt = objc_getAssociatedObject(orig, &kRMModifiedCountKey);
+        if ([cached isKindOfClass:[NSArray class]] && cachedCnt.integerValue == (NSInteger)orig.count)
+            return cached;
 
         // PSListController 可能缓存了我们上次追加过工具的数组，直接返回避免重复追加
         __block BOOL hasTool = NO;
@@ -329,7 +356,8 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
         }
 #endif
 
-        objc_setAssociatedObject(arr, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(orig, &kRMModifiedKey, arr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(orig, &kRMModifiedCountKey, @(orig.count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return arr;
     } @catch (NSException *e) {
         return orig;
@@ -338,7 +366,9 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
 
 // -tableView:cellForRowAtIndexPath:：应用改名/改图（仅主线程回调）
 static id rm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    id cell = ((id (*)(id, SEL, UITableView *, NSIndexPath *))origCellForRow)(self, _cmd, tv, ip);
+    IMP origImp = RMOrigFor([self class], _cmd);
+    if (!origImp) return nil;
+    id cell = ((id (*)(id, SEL, UITableView *, NSIndexPath *))origImp)(self, _cmd, tv, ip);
     @try {
         NSArray *specs = [(PSListController *)self specifiers];
         id spec = RMSpecifierAtIndexPath(specs, ip);
@@ -717,6 +747,40 @@ static void RMInstallDynamicMethods(Class lc) {
 
 #pragma mark - 安装 Hook
 
+static BOOL RMDefinedOn(Class c, SEL s) {
+    unsigned n = 0;
+    Method *ms = class_copyMethodList(c, &n);
+    BOOL r = NO;
+    for (unsigned i = 0; i < n; i++)
+        if (method_getName(ms[i]) == s) { r = YES; break; }
+    if (ms) free(ms);
+    return r;
+}
+
+static void RMReplaceInClass(Class c, SEL sel, IMP newImp) {
+    if (!RMDefinedOn(c, sel)) return;   // 只替换真正在该类上实现的版本
+    Method m = class_getInstanceMethod(c, sel);
+    if (!m) return;
+    IMP orig = method_getImplementation(m);
+    NSString *key = RMHookKey(c, sel);
+    if (!rmOrigMap[key]) rmOrigMap[key] = [NSValue valueWithPointer:orig];
+    method_setImplementation(m, newImp);
+}
+
+// 替换 root 及其全部子类中该选择器的实现（子类重写也能覆盖到）
+static void RMHookAllSubclasses(Class root, SEL sel, IMP newImp) {
+    RMReplaceInClass(root, sel, newImp);
+    unsigned n = 0;
+    Class *classes = objc_copyClassList(&n);
+    if (!classes) return;
+    for (unsigned i = 0; i < n; i++) {
+        for (Class s = class_getSuperclass(classes[i]); s; s = class_getSuperclass(s)) {
+            if (s == root) { RMReplaceInClass(classes[i], sel, newImp); break; }
+        }
+    }
+    free(classes);
+}
+
 __attribute__((constructor))
 static void RMEntryConstructor(void) {
     @autoreleasepool {
@@ -732,19 +796,12 @@ static void RMEntryConstructor(void) {
 
             Class lc = objc_getClass("PSListController");
             if (!lc) return;
+            if (!rmOrigMap) rmOrigMap = [NSMutableDictionary dictionary];
 
-            Method m1 = class_getInstanceMethod(lc, @selector(specifiers));
-            if (m1) {
-                origSpecifiers = method_getImplementation(m1);
-                method_setImplementation(m1, (IMP)rm_specifiers);
-            }
+            RMHookAllSubclasses(lc, @selector(specifiers), (IMP)rm_specifiers);
 
             if (RM_LEVEL >= 3) {
-                Method m2 = class_getInstanceMethod(lc, @selector(tableView:cellForRowAtIndexPath:));
-                if (m2) {
-                    origCellForRow = method_getImplementation(m2);
-                    method_setImplementation(m2, (IMP)rm_cellForRow);
-                }
+                RMHookAllSubclasses(lc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow);
             }
 
             if (RM_LEVEL >= 4) {
