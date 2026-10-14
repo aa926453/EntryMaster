@@ -1,6 +1,6 @@
 Package: com.relaxin.entrymaster
 Name: EntryMaster
-Version: 1.5.1
+Version: 1.5.2
 Architecture: iphoneos-arm64
 Description: 设置条目美化大师：设置首页与二级页面底部提供「改名 / 换图 / 排序 / 恢复」入口；改名、换图为批量列表逐项编辑；排序按住行尾 ☰ 拖动；支持相册或文件选图。arm64+arm64e 双架构适配 RootHide 隐根。安装即生效，无设置界面。
 Author: relaxin
