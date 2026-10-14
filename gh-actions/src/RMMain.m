@@ -137,12 +137,16 @@ static NSString *RMNameOf(id spec) {
 BOOL RMIsGroupSpecifier(id spec) {
     if (!spec) return NO;
     @try {
+        // 防护栏：只在对象真正实现该方法时才调用，避免对特殊 specifier 触发段错误
+        if (![spec respondsToSelector:@selector(cellType)]) {
+            if ([spec respondsToSelector:@selector(propertyForKey:)]) {
+                id v = [(PSSpecifier *)spec propertyForKey:@"cell"];
+                if ([v isKindOfClass:[NSString class]] && [(NSString *)v isEqualToString:@"PSGroupCell"]) return YES;
+            }
+            return NO;
+        }
         NSString *ct = [(PSSpecifier *)spec cellType];
         if ([ct isKindOfClass:[NSString class]] && [ct isEqualToString:@"PSGroupCell"]) return YES;
-    } @catch (NSException *e) {}
-    @try {
-        id v = [(PSSpecifier *)spec propertyForKey:@"cell"];
-        if ([v isKindOfClass:[NSString class]] && [(NSString *)v isEqualToString:@"PSGroupCell"]) return YES;
     } @catch (NSException *e) {}
     return NO;
 }
@@ -371,6 +375,13 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
     RMLOG(@"spec 进入 %@ 原始=%lu", NSStringFromClass([self class]), (unsigned long)orig.count);
     @try {
         if (!orig.count) return orig;
+
+        // PreferenceLoader / OneSettings 驱动的页面（loader 属性）原样放行：
+        // 其 specifier 结构敏感（实测会段错误），且我们不需要动它们的页面
+        if ([(id)self respondsToSelector:@selector(loader)]) {
+            RMLOG(@"spec PL 页面放行 %@", NSStringFromClass([self class]));
+            return orig;
+        }
 
         // PSListController 可能缓存了我们上次追加过工具的数组，直接返回避免重复追加
         __block BOOL hasTool = NO;
