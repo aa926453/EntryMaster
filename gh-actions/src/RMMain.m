@@ -26,26 +26,30 @@
 static NSMutableSet<UIImage *> *rmOurIcons;             // 我们应用过的自定义图（用于复用时还原）
 static char kRMStashKey;                                 // 锚定 key（挂在 PSSpecifier 上）
 static char kRMToolKey;                                  // 工具条目标记（挂在 PSSpecifier 上）
+
+// 白名单 hook：全子类覆盖被证实会闪退（L1 定位），改为只 hook 三个明确的类，
+// 每个类独立记录原 IMP。首页 = PSGGeneralController，通用列表 = PSUIPrefsListController，
+// 兜底 = PSListController。
+static IMP origSpec_Base, origSpec_UIPrefs, origSpec_General;
+static IMP origCell_Base, origCell_UIPrefs, origCell_General;
 static char kRMAnchoredArrKey;                           // 数组已锚定标记（挂在 NSArray 上）
-static char kRMModifiedKey;                              // 原数组 → 我们处理后的数组（结果缓存）
-static char kRMModifiedCountKey;                         // 缓存时的条目数
 
-// iOS 17 上设置首页/多数页面都是 PSListController 的【子类重写】，
-// 只替换父类实现会被子类盖住 —— 必须对每个真正实现该方法的类逐一替换。
-// rmOrigMap 记录每个（类,选择器）的原 IMP，调用时按对象实际类沿继承链回溯。
-static NSMutableDictionary<NSString *, NSValue *> *rmOrigMap;
-
-static NSString *RMHookKey(Class c, SEL s) {
-    return [NSStringFromClass(c) stringByAppendingString:NSStringFromSelector(s)];
+static IMP RMOrigSpec(id self) {
+    Class c = [self class];
+    Class g = objc_getClass("PSGGeneralController");
+    Class u = objc_getClass("PSUIPrefsListController");
+    if (g && c == g && origSpec_General) return origSpec_General;
+    if (u && c == u && origSpec_UIPrefs) return origSpec_UIPrefs;
+    return origSpec_Base;
 }
 
-static IMP RMOrigFor(Class c, SEL s) {
-    if (!rmOrigMap) return NULL;
-    for (Class k = c; k; k = class_getSuperclass(k)) {
-        NSValue *v = rmOrigMap[RMHookKey(k, s)];
-        if (v) return (IMP)v.pointerValue;
-    }
-    return NULL;
+static IMP RMOrigCell(id self) {
+    Class c = [self class];
+    Class g = objc_getClass("PSGGeneralController");
+    Class u = objc_getClass("PSUIPrefsListController");
+    if (g && c == g && origCell_General) return origCell_General;
+    if (u && c == u && origCell_UIPrefs) return origCell_UIPrefs;
+    return origCell_Base;
 }
 
 #pragma mark - 基础工具
@@ -289,18 +293,11 @@ static void RMAnchorPopover(UIAlertController *sheet, UIView *v) {
 
 // -specifiers：应用保存的排序 + 锚定每条 key + 底部追加工具分组
 static NSArray *rm_specifiers(id self, SEL _cmd) {
-    IMP origImp = RMOrigFor([self class], _cmd);
+    IMP origImp = RMOrigSpec(self);
     if (!origImp) return @[];
     NSArray *orig = ((NSArray *(*)(id, SEL))origImp)(self, _cmd);
     @try {
         if (!orig.count) return orig;
-
-        // 同一原始数组且条目数未变时复用缓存结果：保证多次调用返回一致，
-        // 也避免 PSListController 内部把数组当缓存使用时出现身份/内容不一致
-        id cached = objc_getAssociatedObject(orig, &kRMModifiedKey);
-        NSNumber *cachedCnt = objc_getAssociatedObject(orig, &kRMModifiedCountKey);
-        if ([cached isKindOfClass:[NSArray class]] && cachedCnt.integerValue == (NSInteger)orig.count)
-            return cached;
 
         // PSListController 可能缓存了我们上次追加过工具的数组，直接返回避免重复追加
         __block BOOL hasTool = NO;
@@ -356,8 +353,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
         }
 #endif
 
-        objc_setAssociatedObject(orig, &kRMModifiedKey, arr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(orig, &kRMModifiedCountKey, @(orig.count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(arr, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return arr;
     } @catch (NSException *e) {
         return orig;
@@ -366,7 +362,7 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
 
 // -tableView:cellForRowAtIndexPath:：应用改名/改图（仅主线程回调）
 static id rm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    IMP origImp = RMOrigFor([self class], _cmd);
+    IMP origImp = RMOrigCell(self);
     if (!origImp) return nil;
     id cell = ((id (*)(id, SEL, UITableView *, NSIndexPath *))origImp)(self, _cmd, tv, ip);
     @try {
@@ -757,28 +753,12 @@ static BOOL RMDefinedOn(Class c, SEL s) {
     return r;
 }
 
-static void RMReplaceInClass(Class c, SEL sel, IMP newImp) {
-    if (!RMDefinedOn(c, sel)) return;   // 只替换真正在该类上实现的版本
+static void RMHookOne(Class c, SEL sel, IMP newImp, IMP *origOut) {
+    if (!c || !RMDefinedOn(c, sel)) return;   // 只替换真正在该类上实现的版本
     Method m = class_getInstanceMethod(c, sel);
     if (!m) return;
-    IMP orig = method_getImplementation(m);
-    NSString *key = RMHookKey(c, sel);
-    if (!rmOrigMap[key]) rmOrigMap[key] = [NSValue valueWithPointer:orig];
+    if (origOut && !*origOut) *origOut = method_getImplementation(m);
     method_setImplementation(m, newImp);
-}
-
-// 替换 root 及其全部子类中该选择器的实现（子类重写也能覆盖到）
-static void RMHookAllSubclasses(Class root, SEL sel, IMP newImp) {
-    RMReplaceInClass(root, sel, newImp);
-    unsigned n = 0;
-    Class *classes = objc_copyClassList(&n);
-    if (!classes) return;
-    for (unsigned i = 0; i < n; i++) {
-        for (Class s = class_getSuperclass(classes[i]); s; s = class_getSuperclass(s)) {
-            if (s == root) { RMReplaceInClass(classes[i], sel, newImp); break; }
-        }
-    }
-    free(classes);
 }
 
 __attribute__((constructor))
@@ -796,12 +776,18 @@ static void RMEntryConstructor(void) {
 
             Class lc = objc_getClass("PSListController");
             if (!lc) return;
-            if (!rmOrigMap) rmOrigMap = [NSMutableDictionary dictionary];
+            Class uipc = objc_getClass("PSUIPrefsListController");
+            Class gen = objc_getClass("PSGGeneralController");
 
-            RMHookAllSubclasses(lc, @selector(specifiers), (IMP)rm_specifiers);
+            // 白名单 specifiers hook（L2 验证过的安全逻辑 + 覆盖首页）
+            RMHookOne(lc,   @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
+            RMHookOne(uipc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_UIPrefs);
+            RMHookOne(gen,  @selector(specifiers), (IMP)rm_specifiers, &origSpec_General);
 
             if (RM_LEVEL >= 3) {
-                RMHookAllSubclasses(lc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow);
+                RMHookOne(lc,   @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_Base);
+                RMHookOne(uipc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_UIPrefs);
+                RMHookOne(gen,  @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_General);
             }
 
             if (RM_LEVEL >= 4) {
