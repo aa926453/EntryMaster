@@ -32,7 +32,7 @@ for ARCH in arm64 arm64e; do
   echo "[*] 链接 $ARCH..."
   xcrun clang -arch "$ARCH" -dynamiclib -isysroot "$SDK" -miphoneos-version-min=14.0 \
     -install_name "/var/jb/Library/MobileSubstrate/DynamicLibraries/EntryMaster.dylib" \
-    "${FRAMEWORKS[@]}" "${OBJS[@]}" -o "$OUT/EntryMaster.$ARCH.dylib"
+    -Wl,-undefined,dynamic_lookup "${FRAMEWORKS[@]}" "${OBJS[@]}" -o "$OUT/EntryMaster.$ARCH.dylib"
 
   echo "[*] ldid 签名 $ARCH 切片..."
   ldid -S "$OUT/EntryMaster.$ARCH.dylib"
