@@ -337,13 +337,8 @@ static id RMToolButtonSpec(NSString *title, SEL action, id target) {
                                                         cell:RM_PSButtonCell
                                                         edit:0];
     if (!spec) return nil;
-    // iOS 17 的 PSSpecifier 已无 setTargetObject: 选择器（构造参数 target: 已完成存储）；
-    // setButtonAction: 仍存在，但做 respondsToSelector 防线，缺失时退回属性字典（标准存储位）
-    if ([spec respondsToSelector:@selector(setButtonAction:)]) {
-        [spec setButtonAction:action];
-    } else {
-        [spec setProperty:(id)action forKey:@"buttonAction"];
-    }
+    // iOS 17 实测 setButtonAction: 存在（此前异常来自其后的 setTargetObject:，已移除）
+    [spec setButtonAction:action];
     objc_setAssociatedObject(spec, &kRMToolKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return spec;
 }
