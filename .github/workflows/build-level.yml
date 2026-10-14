@@ -1,0 +1,36 @@
+name: Build Level
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'RM_LEVEL (1-4)'
+        required: true
+        default: '2'
+
+defaults:
+  run:
+    working-directory: gh-actions
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools (ldid + dpkg)
+        run: |
+          brew install ldid dpkg
+
+      - name: Build level
+        run: |
+          chmod +x build_macos.sh
+          RM_LEVEL=${{ inputs.level }} ./build_macos.sh
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: EntryMaster-deb-l${{ inputs.level }}
+          path: gh-actions/*.deb
+          if-no-files-found: error
