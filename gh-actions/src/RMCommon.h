@@ -26,7 +26,7 @@
 + (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(id)detail cell:(int)cell edit:(int)edit;
 + (id)groupSpecifierWithTitle:(NSString *)title;
 - (void)setButtonAction:(SEL)action;
-- (void)setTargetObject:(id)target;
+- (void)setProperty:(id)property forKey:(NSString *)key;
 @end
 
 @interface PSListController : UIViewController
