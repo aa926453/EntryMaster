@@ -20,6 +20,10 @@
 #ifndef RM_LEVEL
 #define RM_LEVEL 9
 #endif
+// 覆盖模式：1 = 白名单三类（PSGGeneral/UIPrefs/Base），0 = 仅 PSListController 基类（L2 验证安全）
+#ifndef RM_COVER
+#define RM_COVER 1
+#endif
 
 #pragma mark - 全局状态
 
@@ -709,8 +713,10 @@ static void RMInstallDynamicMethods(Class lc) {
     class_addMethod(lc, @selector(rmOpenRestore:), imp_implementationWithBlock(^(id _self, PSSpecifier *spec) {
         RMShowRestoreSheet(_self);
     }), "v@:@");
+}
 
-    // 排序编辑模式的数据源支持
+// 编辑模式数据源支持（排序拖动用）——独立成层（RM_LEVEL>=5），便于定位崩溃
+static void RMInstallEditSupport(Class lc) {
     // editingStyle/shouldIndent: 替换（返回安全默认值，不影响行数）
     RMSetOrAddMethod(lc, @selector(tableView:editingStyleForRowAtIndexPath:), "Q@:@@",
         imp_implementationWithBlock(^UITableViewCellEditingStyle(id _self, UITableView *tv, NSIndexPath *ip) {
@@ -779,19 +785,26 @@ static void RMEntryConstructor(void) {
             Class uipc = objc_getClass("PSUIPrefsListController");
             Class gen = objc_getClass("PSGGeneralController");
 
-            // 白名单 specifiers hook（L2 验证过的安全逻辑 + 覆盖首页）
-            RMHookOne(lc,   @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
+            // specifiers hook：白名单或仅基类（L2 验证安全的组合）
+            RMHookOne(lc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
+#if RM_COVER >= 1
             RMHookOne(uipc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_UIPrefs);
             RMHookOne(gen,  @selector(specifiers), (IMP)rm_specifiers, &origSpec_General);
+#endif
 
             if (RM_LEVEL >= 3) {
-                RMHookOne(lc,   @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_Base);
+                RMHookOne(lc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_Base);
+#if RM_COVER >= 1
                 RMHookOne(uipc, @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_UIPrefs);
                 RMHookOne(gen,  @selector(tableView:cellForRowAtIndexPath:), (IMP)rm_cellForRow, &origCell_General);
+#endif
             }
 
             if (RM_LEVEL >= 4) {
                 RMInstallDynamicMethods(lc);
+            }
+            if (RM_LEVEL >= 5) {
+                RMInstallEditSupport(lc);
             }
         } @catch (NSException *e) {}
     }
