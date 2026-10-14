@@ -77,14 +77,17 @@ typedef NS_ENUM(NSInteger, RMPickSource) {
 
 #pragma mark - 工具函数（跨文件）
 
+/// 黑匣子日志（RM_DEBUG 编译时启用）：写入 /var/mobile/Library/Preferences/entrymaster.log
+void RMLog(NSString *fmt, ...);
+/// 安装信号崩溃捕获，崩溃时把信号与调用栈写进日志
+void RMLogInstallCrashTrap(void);
+
 /// 列表页稳定 key（类名 | plist 名）
 NSString *RMPageKey(id listController);
 /// 条目稳定 key：优先取锚定阶段写入的 key，其次条目原名
 NSString *RMKeyForSpecifier(id specifier);
-/// 是否为分组头（PSGroupCell）
-BOOL RMIsGroupSpecifier(id specifier);
-/// 把 indexPath(section,row) 映射到 specifiers 数组中的下标（分组头不算行）
-NSInteger RMFlatIndexOfIndexPath(NSArray *specs, NSIndexPath *ip);
+/// 用 UITableView 的分区结构把 indexPath 折算成 specifiers 扁平数组下标（NSNotFound 表示无法确定）
+NSInteger RMFlatIndexOfTable(UITableView *tv, NSIndexPath *ip);
 /// 刷新列表页
 void RMRefresh(id listController);
 /// 把自定义改名 / 自定义图标应用到单元格
