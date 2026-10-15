@@ -28,6 +28,7 @@ jobs:
           brew install ldid dpkg
 
       - name: Build
+        working-directory: gh-actions
         run: |
           chmod +x build_macos.sh
           RM_LEVEL="${{ github.event.inputs.level }}" RM_COVER="${{ github.event.inputs.cover }}" RM_PROBE="${{ github.event.inputs.probe }}" ./build_macos.sh
