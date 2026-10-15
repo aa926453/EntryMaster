@@ -2,12 +2,19 @@ name: Build EntryMaster
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
-
-defaults:
-  run:
-    working-directory: gh-actions
+    inputs:
+      level:
+        description: '功能层级 (1=全裸 2=仅hook 3=改名 4=+入口 5=全功能)'
+        required: false
+        default: '9'
+      cover:
+        description: 'hook 覆盖 (1=三类 2=lc+uipc 3=lc+gen)'
+        required: false
+        default: '1'
+      probe:
+        description: '探针版 (1=只加载不hook)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -23,11 +30,11 @@ jobs:
       - name: Build
         run: |
           chmod +x build_macos.sh
-          ./build_macos.sh
+          RM_LEVEL="${{ github.event.inputs.level }}" RM_COVER="${{ github.event.inputs.cover }}" RM_PROBE="${{ github.event.inputs.probe }}" ./build_macos.sh
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
         with:
-          name: EntryMaster-deb
-          path: gh-actions/*.deb
+          name: EntryMaster-deb-${{ github.run_number }}
+          path: "*.deb"
           if-no-files-found: error
