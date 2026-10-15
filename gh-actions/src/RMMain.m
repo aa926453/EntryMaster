@@ -326,23 +326,6 @@ static BOOL RMIsToolSpecifier(id spec) {
     return spec != nil && objc_getAssociatedObject(spec, &kRMToolKey) != nil;
 }
 
-static id RMToolButtonSpec(NSString *title, SEL action, id target) {
-    if (![PSSpecifier respondsToSelector:@selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:)])
-        return nil;
-    PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:title
-                                                      target:target
-                                                         set:NULL
-                                                         get:NULL
-                                                      detail:nil
-                                                        cell:RM_PSButtonCell
-                                                        edit:0];
-    if (!spec) return nil;
-    // iOS 17 实测 setButtonAction: 存在（此前异常来自其后的 setTargetObject:，已移除）
-    [spec setButtonAction:action];
-    objc_setAssociatedObject(spec, &kRMToolKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return spec;
-}
-
 static void RMAnchorPopover(UIAlertController *sheet, UIView *v) {
     if (!sheet.popoverPresentationController) return;
     if (!v) return;
@@ -403,29 +386,9 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
             RMLOG(@"spec 排序应用完成");
         }
 
-        // 底部工具分组：所有 PSListController 页面固定追加
-        // （不能按导航深度条件增减，否则分区结构与数组不一致会导致越界崩溃）
-#if RM_LEVEL >= 2
-        {
-            PSSpecifier *grp = nil;
-            if ([PSSpecifier respondsToSelector:@selector(groupSpecifierWithTitle:)])
-                grp = [PSSpecifier groupSpecifierWithTitle:@"EntryMaster"];
-            if (!grp &&
-                [PSSpecifier respondsToSelector:@selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:)])
-                grp = [PSSpecifier preferenceSpecifierNamed:@"EntryMaster" target:nil set:NULL get:NULL detail:nil cell:RM_PSGroupCell edit:0];
-            if (grp) {
-                objc_setAssociatedObject(grp, &kRMToolKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                [arr addObject:grp];
-            }
-            RMLOG(@"spec 分组已加 grp=%d", grp != nil);
-            PSSpecifier *btn;
-            if ((btn = RMToolButtonSpec(@"改名", @selector(rmOpenRename:), self))) [arr addObject:btn];
-            if ((btn = RMToolButtonSpec(@"换图", @selector(rmOpenIcons:), self))) [arr addObject:btn];
-            if ((btn = RMToolButtonSpec(@"排序", @selector(rmOpenSort:), self))) [arr addObject:btn];
-            if ((btn = RMToolButtonSpec(@"恢复", @selector(rmOpenRestore:), self))) [arr addObject:btn];
-            RMLOG(@"spec 四按钮已加");
-        }
-#endif
+        // 注意：绝不向 specifiers 数组追加任何对象！
+        // 实测 iOS17 上 PreferenceLoader/OneSettings 托管的页面消化不了额外对象，会导致进程被系统击杀。
+        // 入口改用 UITableView 的 tableFooterView 工具条（见 RMInstallFooter）。
 
         objc_setAssociatedObject(arr, &kRMAnchoredArrKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         RMLOG(@"spec 返回 共=%lu", (unsigned long)arr.count);
@@ -791,6 +754,67 @@ static void RMInstallDynamicMethods(Class lc) {
     }), "v@:@");
 }
 
+#pragma mark - 底部工具条（tableFooterView 方案，不触碰 specifiers）
+
+static char kRMFooterKey;
+
+static void RMInstallFooter(id vc) {
+    @try {
+        if (![vc isKindOfClass:[PSListController class]]) return;
+        UITableView *tv = RMTableFor(vc);
+        if (!tv) return;
+        if (objc_getAssociatedObject(tv, &kRMFooterKey)) return; // 已装过
+
+        CGFloat w = tv.bounds.size.width ?: [UIScreen mainScreen].bounds.size.width;
+        CGFloat pad = 16, gap = 10, bh = 44;
+        CGFloat bw = (w - pad * 2 - gap) / 2;
+        CGFloat h = pad + bh * 2 + gap + pad;
+        UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, h)];
+        bar.backgroundColor = UIColor.clearColor;
+        NSArray *titles = @[@"改名", @"换图", @"排序", @"恢复"];
+        NSArray *actions = @[@"rmOpenRename:", @"rmOpenIcons:", @"rmOpenSort:", @"rmOpenRestore:"];
+        for (int i = 0; i < 4; i++) {
+            UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+            b.frame = CGRectMake(pad + (i % 2) * (bw + gap), pad + (i / 2) * (bh + gap), bw, bh);
+            b.layer.cornerRadius = 12;
+            b.backgroundColor = [UIColor secondarySystemFillColor];
+            [b setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+            b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+            [b setTitle:titles[i] forState:UIControlStateNormal];
+            [b addTarget:vc action:NSSelectorFromString(actions[i]) forControlEvents:UIControlEventTouchUpInside];
+            [bar addSubview:b];
+        }
+        objc_setAssociatedObject(tv, &kRMFooterKey, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        tv.tableFooterView = bar;
+        RMLOG(@"footer 已装 %@", NSStringFromClass([vc class]));
+    } @catch (NSException *e) {
+        RMLOG(@"footer 异常 %@ %@", e.name, e.reason);
+    }
+}
+
+// viewDidAppear 时挂 footer（复制继承实现到自身类再替换，避免污染 UIViewController 全局）
+static void RMHookViewDidAppear(Class c) {
+    if (!c) return;
+    @try {
+        SEL sel = @selector(viewDidAppear:);
+        Method m = class_getInstanceMethod(c, sel);
+        if (!m) return;
+        if (class_getInstanceMethod([c superclass], sel) == m) {
+            class_addMethod(c, sel, method_getImplementation(m), method_getTypeEncoding(m));
+            m = class_getInstanceMethod(c, sel);
+            if (!m || class_getInstanceMethod([c superclass], sel) == m) return;
+        }
+        __block void (*orig)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))method_getImplementation(m);
+        method_setImplementation(m, imp_implementationWithBlock(^(id _self, BOOL animated) {
+            orig(_self, sel, animated);
+            dispatch_async(dispatch_get_main_queue(), ^{ RMInstallFooter(_self); });
+        }));
+        RMLOG(@"hook viewDidAppear %@", NSStringFromClass(c));
+    } @catch (NSException *e) {
+        RMLOG(@"viewDidAppear hook 异常 %@ %@", e.name, e.reason);
+    }
+}
+
 // 编辑模式数据源支持（排序拖动用）——独立成层（RM_LEVEL>=5），便于定位崩溃
 static void RMInstallEditSupport(Class lc) {
     // editingStyle/shouldIndent: 替换（返回安全默认值，不影响行数）
@@ -894,6 +918,10 @@ static void RMEntryConstructor(void) {
             if (RM_LEVEL >= 4) {
                 RMInstallDynamicMethods(lc);
                 RMLOG(@"动态方法安装完成");
+                // footer 工具条：派生类在前、基类在后，保证各自复制的都是未 hook 的原始实现
+                RMHookViewDidAppear(gen);
+                RMHookViewDidAppear(uipc);
+                RMHookViewDidAppear(lc);
             }
             if (RM_LEVEL >= 5) {
                 RMInstallEditSupport(lc);
