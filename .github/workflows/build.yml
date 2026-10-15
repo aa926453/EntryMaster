@@ -37,5 +37,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: EntryMaster-deb-${{ github.run_number }}
-          path: "*.deb"
+          path: gh-actions/*.deb
           if-no-files-found: error
