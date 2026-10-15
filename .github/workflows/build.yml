@@ -15,6 +15,10 @@ on:
         description: '探针版 (1=只加载不hook)'
         required: false
         default: ''
+      debug:
+        description: '黑匣子日志 (1=开)'
+        required: false
+        default: '1'
 
 jobs:
   build:
@@ -31,7 +35,7 @@ jobs:
         working-directory: gh-actions
         run: |
           chmod +x build_macos.sh
-          RM_LEVEL="${{ github.event.inputs.level }}" RM_COVER="${{ github.event.inputs.cover }}" RM_PROBE="${{ github.event.inputs.probe }}" ./build_macos.sh
+          RM_LEVEL="${{ github.event.inputs.level }}" RM_COVER="${{ github.event.inputs.cover }}" RM_PROBE="${{ github.event.inputs.probe }}" RM_DEBUG="${{ github.event.inputs.debug }}" ./build_macos.sh
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
