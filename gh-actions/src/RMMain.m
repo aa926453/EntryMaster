@@ -342,6 +342,10 @@ static NSArray *rm_specifiers(id self, SEL _cmd) {
     if (!origImp) return @[];
     NSArray *orig = ((NSArray *(*)(id, SEL))origImp)(self, _cmd);
     RMLOG(@"spec 进入 %@ 原始=%lu", NSStringFromClass([self class]), (unsigned long)orig.count);
+#if RM_LEVEL <= 2
+    // L1/L2 阶梯隔离测试：纯过路，零处理（L2 仅验证 hook 本身是否致命）
+    return orig;
+#endif
     @try {
         if (!orig.count) return orig;
 
@@ -892,7 +896,8 @@ static void RMEntryConstructor(void) {
             Class gen = objc_getClass("PSGGeneralController");
             RMLOG(@"类查找完成 lc=%d uipc=%d gen=%d", lc != nil, uipc != nil, gen != nil);
 
-            // specifiers hook：覆盖模式见文件头注释
+#if RM_LEVEL >= 2
+            // specifiers hook：覆盖模式见文件头注释（L1 全裸测试不装任何 hook）
             RMHookOne(lc, @selector(specifiers), (IMP)rm_specifiers, &origSpec_Base);
             RMLOG(@"hook base spec 完成");
 #if RM_COVER == 1 || RM_COVER == 2
@@ -902,6 +907,7 @@ static void RMEntryConstructor(void) {
 #if RM_COVER == 1 || RM_COVER == 3
             RMHookOne(gen,  @selector(specifiers), (IMP)rm_specifiers, &origSpec_General);
             RMLOG(@"hook gen spec 完成");
+#endif
 #endif
 
             if (RM_LEVEL >= 3) {
