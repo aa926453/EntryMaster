@@ -14,7 +14,7 @@ OUT=build
 mkdir -p "$OUT"
 
 SRC="RMStore RMPickers RMMain"
-VERSION="1.6.2"
+VERSION="1.7.0"
 if [ -n "${RM_PROBE:-}" ]; then VERSION="1.5.2-probe"; fi
 if [ -n "${RM_LEVEL:-}" ]; then VERSION="${VERSION}-l${RM_LEVEL}"; fi
 if [ -n "${RM_COVER:-}" ]; then VERSION="${VERSION}-c${RM_COVER}"; fi
